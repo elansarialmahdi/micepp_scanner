@@ -1,0 +1,11 @@
+.git
+.env
+.venv
+.codex-qa
+frontend/node_modules
+frontend/dist
+data
+reports
+models
+*.docx
+

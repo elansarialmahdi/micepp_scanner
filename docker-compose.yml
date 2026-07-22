@@ -1,0 +1,173 @@
+name: micepp-scanner
+
+x-backend-environment: &backend-environment
+  ENVIRONMENT: ${ENVIRONMENT:-production}
+  APP_SECRET_KEY: ${APP_SECRET_KEY:?APP_SECRET_KEY obligatoire}
+  AUDIT_HMAC_KEY: ${AUDIT_HMAC_KEY:?AUDIT_HMAC_KEY obligatoire}
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-micepp}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD obligatoire}@database:5432/${POSTGRES_DB:-micepp}
+  REDIS_URL: redis://redis:6379/0
+  EVIDENCE_ROOT: /evidence
+  WORK_ROOT: /work
+  REPORT_ROOT: /reports
+  MODEL_ROOT: /models
+  YARA_RULES_ROOT: /app/rules
+  CLAMAV_HOST: clamav
+  CLAMAV_PORT: 3310
+  BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-admin}
+  BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?BOOTSTRAP_ADMIN_PASSWORD obligatoire}
+  BOOTSTRAP_ADMIN_FULL_NAME: ${BOOTSTRAP_ADMIN_FULL_NAME:-Administrateur MICEPP}
+  ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-60}
+  CAPE_BASE_URL: ${CAPE_BASE_URL:-}
+  CAPE_API_TOKEN: ${CAPE_API_TOKEN:-}
+  CAPE_VERIFY_TLS: ${CAPE_VERIFY_TLS:-true}
+  CAPE_POLL_SECONDS: ${CAPE_POLL_SECONDS:-10}
+  CAPE_TIMEOUT_SECONDS: ${CAPE_TIMEOUT_SECONDS:-900}
+  MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-53687091200}
+  MAX_EXTRACTED_FILES: ${MAX_EXTRACTED_FILES:-100000}
+  MAX_EXTRACTED_BYTES: ${MAX_EXTRACTED_BYTES:-107374182400}
+  YARA_TIMEOUT_SECONDS: ${YARA_TIMEOUT_SECONDS:-30}
+  SANDBOX_RISK_THRESHOLD: ${SANDBOX_RISK_THRESHOLD:-55}
+  MODEL_MIN_SAMPLES_PER_CLASS: ${MODEL_MIN_SAMPLES_PER_CLASS:-20}
+
+x-backend-volumes: &backend-volumes
+  - evidence:/evidence
+  - work:/work
+  - reports:/reports
+  - models:/models
+
+services:
+  database:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-micepp}
+      POSTGRES_USER: ${POSTGRES_USER:-micepp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD obligatoire}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-micepp} -d ${POSTGRES_DB:-micepp}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [backend]
+    security_opt: [no-new-privileges:true]
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [backend]
+    security_opt: [no-new-privileges:true]
+
+  clamav:
+    image: clamav/clamav:stable_base
+    restart: unless-stopped
+    environment:
+      CLAMD_STARTUP_TIMEOUT: 1800
+      FRESHCLAM_CHECKS: 12
+    volumes:
+      - clamav-db:/var/lib/clamav
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 60
+      start_period: 5m
+    networks: [backend, updates]
+    security_opt: [no-new-privileges:true]
+
+  migrate:
+    build:
+      context: ./backend
+    environment: *backend-environment
+    command: ["alembic", "upgrade", "head"]
+    volumes: *backend-volumes
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [backend]
+    restart: "no"
+
+  api:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment: *backend-environment
+    volumes: *backend-volumes
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks: [backend, frontend]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  worker:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    command: ["celery", "-A", "app.worker.celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
+    environment: *backend-environment
+    volumes: *backend-volumes
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks: [backend, frontend]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    stop_grace_period: 2m
+
+  web:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-8787}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks: [frontend]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+volumes:
+  postgres-data:
+  redis-data:
+  clamav-db:
+  evidence:
+  work:
+  reports:
+  models:
+
+networks:
+  backend:
+    internal: true
+  frontend:
+  updates:
