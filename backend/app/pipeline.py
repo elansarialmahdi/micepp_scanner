@@ -8,7 +8,8 @@ from sqlalchemy import select
 from app.analyzers.cape import CapeUnavailable, analyze_in_cape
 from app.analyzers.extractor import extract_evidence
 from app.analyzers.ml import predict
-from app.analyzers.static import AnalyzerFinding, analyze_static
+from app.analyzers.static import analyze_static
+from app.analyzers.types import AnalyzerFinding
 from app.audit import append_event
 from app.config import settings
 from app.database import SessionLocal
