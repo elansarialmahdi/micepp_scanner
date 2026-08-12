@@ -91,6 +91,7 @@ class OfficeAnalyzer(BaseAnalyzer):
                         details={
                             "indicator_count": len(macro_indicators),
                             "indicators": macro_indicators[:100],
+                            "mitre_ttp": "T1059.005",
                         },
                     )
                 )

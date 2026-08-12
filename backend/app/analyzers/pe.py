@@ -102,6 +102,7 @@ class PEAnalyzer(BaseAnalyzer):
                         {
                             "count": high_entropy,
                             "sections": sections,
+                            "mitre_ttp": "T1027",
                         },
                     )
                 )

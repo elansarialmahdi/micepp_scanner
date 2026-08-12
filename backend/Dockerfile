@@ -1,4 +1,4 @@
-FROM python:3.13-slim-bookworm AS runtime
+FROM python:3.13-slim-bookworm@sha256:67a1e1f215ccda113cfc024e8639049257e88f273898f595b61476d128d387e8 AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -32,3 +32,13 @@ RUN groupadd --gid 10001 micepp \
 USER 10001:10001
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+
+FROM runtime AS test
+
+USER root
+COPY requirements-dev.txt .
+RUN pip install -r requirements-dev.txt
+COPY tests ./tests
+
+USER 10001:10001
+CMD ["python", "-m", "pytest", "/app/tests", "-q"]

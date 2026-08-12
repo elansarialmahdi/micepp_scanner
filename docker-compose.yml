@@ -37,7 +37,7 @@ x-backend-volumes: &backend-volumes
 
 services:
   database:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-micepp}
@@ -54,7 +54,7 @@ services:
     security_opt: [no-new-privileges:true]
 
   redis:
-    image: redis:7.4-alpine
+    image: redis:7.4-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
     volumes:
@@ -68,7 +68,7 @@ services:
     security_opt: [no-new-privileges:true]
 
   clamav:
-    image: clamav/clamav:stable_base
+    image: clamav/clamav:stable_base@sha256:4fd02d6296423e2bc6b9dc139166230cc960526c2883926b1d154e00354479e6
     restart: unless-stopped
     environment:
       CLAMD_STARTUP_TIMEOUT: 1800
@@ -87,6 +87,7 @@ services:
   migrate:
     build:
       context: ./backend
+      target: runtime
     environment: *backend-environment
     command: ["alembic", "upgrade", "head"]
     volumes: *backend-volumes
@@ -99,6 +100,7 @@ services:
   api:
     build:
       context: ./backend
+      target: runtime
     restart: unless-stopped
     environment: *backend-environment
     volumes: *backend-volumes
@@ -121,6 +123,7 @@ services:
   worker:
     build:
       context: ./backend
+      target: runtime
     restart: unless-stopped
     command: ["celery", "-A", "app.worker.celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
     environment: *backend-environment
@@ -134,10 +137,26 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.worker.celery_app inspect ping --timeout=5 | grep -q pong"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     networks: [backend, frontend]
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     stop_grace_period: 2m
+
+  test:
+    build:
+      context: ./backend
+      target: test
+    profiles: [test]
+    environment:
+      ENVIRONMENT: test
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
 
   web:
     build:

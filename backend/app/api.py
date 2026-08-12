@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -11,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.analyzers.ml import train as train_model
-from app.audit import append_event, verify_chain
+from app.audit import AuditAnchorError, append_event, commit_with_audit_anchor, verify_chain
 from app.config import settings
 from app.database import get_db
 from app.models import (
@@ -58,7 +59,7 @@ from app.security import (
     hash_password,
     require_roles,
 )
-from app.storage import hash_file, persist_upload
+from app.storage import hash_file, persist_upload, remove_readonly_tree
 from app.worker import analyze_evidence_task
 
 
@@ -71,7 +72,7 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
     if not user:
         raise HTTPException(status_code=401, detail="Identifiants invalides")
     append_event(db, actor_id=user.id, action="auth.login", target_type="user", target_id=user.id)
-    db.commit()
+    commit_with_audit_anchor(db)
     return Token(access_token=create_access_token(user))
 
 
@@ -113,7 +114,7 @@ def create_user(
         target_id=user.id,
         payload={"username": user.username, "role": user.role.value},
     )
-    db.commit()
+    commit_with_audit_anchor(db)
     return user
 
 
@@ -162,7 +163,7 @@ def create_case(payload: CaseCreate, user: User = Depends(get_current_user), db:
         target_id=case.id,
         payload={"reference": case.reference, "classification": case.classification},
     )
-    db.commit()
+    commit_with_audit_anchor(db)
     return case
 
 
@@ -185,7 +186,7 @@ def seal_case(
         raise HTTPException(status_code=404, detail="Dossier introuvable")
     case.status = CaseStatus.SEALED
     append_event(db, actor_id=user.id, action="case.sealed", target_type="case", target_id=case.id)
-    db.commit()
+    commit_with_audit_anchor(db)
     return case
 
 
@@ -212,38 +213,43 @@ async def upload_evidence(
         raise HTTPException(status_code=409, detail="Le dossier est scellé ou clôturé")
     evidence_id = str(uuid.uuid4())
     stored = await persist_upload(file, evidence_id)
-    evidence = Evidence(
-        id=evidence_id,
-        case_id=case_id,
-        label=label,
-        original_filename=Path(file.filename or "evidence.bin").name,
-        kind=kind,
-        storage_path=str(stored.path),
-        size_bytes=stored.size,
-        sha256=stored.sha256,
-        sha1=stored.sha1,
-        md5=stored.md5,
-        acquisition_notes=acquisition_notes,
-        source_identifier=source_identifier,
-        created_by_id=user.id,
-    )
-    db.add(evidence)
-    append_event(
-        db,
-        actor_id=user.id,
-        action="evidence.ingested",
-        target_type="evidence",
-        target_id=evidence.id,
-        payload={
-            "case_id": case_id,
-            "filename": evidence.original_filename,
-            "kind": kind.value,
-            "size_bytes": stored.size,
-            "sha256": stored.sha256,
-            "source_identifier": source_identifier,
-        },
-    )
-    db.commit()
+    try:
+        evidence = Evidence(
+            id=evidence_id,
+            case_id=case_id,
+            label=label,
+            original_filename=Path(file.filename or "evidence.bin").name,
+            kind=kind,
+            storage_path=str(stored.path),
+            size_bytes=stored.size,
+            sha256=stored.sha256,
+            sha1=stored.sha1,
+            md5=stored.md5,
+            acquisition_notes=acquisition_notes,
+            source_identifier=source_identifier,
+            created_by_id=user.id,
+        )
+        db.add(evidence)
+        append_event(
+            db,
+            actor_id=user.id,
+            action="evidence.ingested",
+            target_type="evidence",
+            target_id=evidence.id,
+            payload={
+                "case_id": case_id,
+                "filename": evidence.original_filename,
+                "kind": kind.value,
+                "size_bytes": stored.size,
+                "sha256": stored.sha256,
+                "source_identifier": source_identifier,
+            },
+        )
+        commit_with_audit_anchor(db)
+    except Exception:
+        db.rollback()
+        remove_readonly_tree(stored.path.parent)
+        raise
     return evidence
 
 
@@ -274,7 +280,7 @@ def verify_evidence(
         target_id=evidence.id,
         payload={"valid": valid, "expected_sha256": evidence.sha256, "observed_sha256": observed[1]},
     )
-    db.commit()
+    commit_with_audit_anchor(db)
     if not valid:
         raise HTTPException(status_code=409, detail="L'intégrité de la preuve est compromise")
     return evidence
@@ -308,7 +314,7 @@ def queue_analysis(
         target_id=job.id,
         payload={"evidence_id": evidence_id},
     )
-    db.commit()
+    commit_with_audit_anchor(db)
     try:
         analyze_evidence_task.delay(job.id)
     except Exception as exc:
@@ -322,7 +328,7 @@ def queue_analysis(
             target_id=job.id,
             payload={"error": str(exc)},
         )
-        db.commit()
+        commit_with_audit_anchor(db)
         raise HTTPException(status_code=503, detail="Le worker d'analyse est indisponible") from exc
     return job
 
@@ -409,7 +415,7 @@ def review_job(
         target_id=job.id,
         payload={"decision": payload.decision.value, "comments": payload.comments},
     )
-    db.commit()
+    commit_with_audit_anchor(db)
     return job
 
 
@@ -435,7 +441,7 @@ def download_report(job_id: str, user: User = Depends(get_current_user), db: Ses
         target_id=job.id,
         payload={"filename": path.name},
     )
-    db.commit()
+    commit_with_audit_anchor(db)
     return FileResponse(path, media_type="application/pdf", filename=path.name)
 
 
@@ -474,7 +480,7 @@ def set_ground_truth(
         target_id=artifact_id,
         payload={"label": payload.label.value, "notes": payload.notes},
     )
-    db.commit()
+    commit_with_audit_anchor(db)
 
 
 @router.get("/models", response_model=list[ModelOut])
@@ -522,7 +528,7 @@ def train_supervised_model(
         target_id=model.id,
         payload={"version": model.version, "metrics": model.metrics, "manifest_hash": model.training_manifest_hash},
     )
-    db.commit()
+    commit_with_audit_anchor(db)
     return model
 
 

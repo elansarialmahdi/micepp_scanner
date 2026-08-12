@@ -87,3 +87,20 @@ def hash_file(path: Path) -> tuple[int, str, str, str]:
             md5.update(chunk)
     return size, sha256.hexdigest(), sha1.hexdigest(), md5.hexdigest()
 
+
+def remove_readonly_tree(target_dir: Path) -> None:
+    if not target_dir.exists():
+        return
+    for item in target_dir.rglob("*"):
+        try:
+            item.chmod(0o666)
+        except OSError:
+            pass
+    try:
+        target_dir.chmod(0o777)
+    except OSError:
+        pass
+    import shutil
+    shutil.rmtree(target_dir, ignore_errors=True)
+
+

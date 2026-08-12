@@ -65,11 +65,39 @@ def generate_report(db: Session, job: AnalysisJob) -> Path:
     )
     story.extend([table, Spacer(1, 6 * mm), Paragraph("Synthèse", styles["Heading2"]), Paragraph(str(job.summary), styles["BodyText"])])
     story.extend([Spacer(1, 4 * mm), Paragraph("Constats techniques", styles["Heading2"])])
+    ttp_matches = []
     for finding in sorted(job.findings, key=lambda item: item.severity, reverse=True):
         story.append(Paragraph(f"[{finding.severity}/100] {finding.title}", styles["Heading3"]))
         story.append(Paragraph(f"Agent : {finding.agent} - Catégorie : {finding.category}", styles["Small"]))
         story.append(Paragraph(finding.description or "Aucune description.", styles["BodyText"]))
+        
+        details = finding.details or {}
+        ttp = details.get("mitre_ttp") or (details.get("meta") or {}).get("mitre_ttp")
+        if ttp and ttp not in ttp_matches:
+            ttp_matches.append((ttp, finding.title, finding.severity))
+            
         story.append(Spacer(1, 2 * mm))
+
+    if ttp_matches:
+        story.extend([Spacer(1, 4 * mm), Paragraph("Cartographie MITRE ATT&CK", styles["Heading2"])])
+        ttp_rows = [["ID Technique", "Description / Constat ASSOCIÉ", "Sévérité"]]
+        for ttp_id, ttp_title, ttp_sev in ttp_matches:
+            ttp_rows.append([ttp_id, ttp_title, f"{ttp_sev}/100"])
+        ttp_table = Table(ttp_rows, colWidths=[35 * mm, 105 * mm, 30 * mm], repeatRows=1)
+        ttp_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#243B53")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 8),
+                    ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#9FB3C8")),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ]
+            )
+        )
+        story.extend([ttp_table, Spacer(1, 4 * mm)])
+
     story.append(PageBreak())
     story.append(Paragraph("Chaîne de conservation et audit", styles["Heading2"]))
     chain_valid, chain_count, invalid_hash = verify_chain(db)

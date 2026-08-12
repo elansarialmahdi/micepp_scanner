@@ -5,8 +5,9 @@ import re
 from collections import Counter
 from pathlib import Path
 
+from app.analyzers.ember import extract_ember_features
 
-FEATURE_NAMES = [
+BASE_FEATURE_NAMES = [
     "size_log2",
     "entropy",
     "printable_ratio",
@@ -27,6 +28,22 @@ FEATURE_NAMES = [
     "sandbox_signature_count",
     "sandbox_score",
 ]
+
+EMBER_HISTOGRAM_NAMES = [f"byte_hist_{i}" for i in range(256)]
+EMBER_ENTROPY_NAMES = [f"entropy_bin_{i}" for i in range(16)]
+EMBER_PE_NAMES = [
+    "is_pe",
+    "has_debug",
+    "exports_count",
+    "imports_count",
+    "has_relocations",
+    "has_resources",
+    "has_signature",
+    "has_tls",
+    "pe_unmapped_sections",
+]
+
+FEATURE_NAMES = BASE_FEATURE_NAMES + EMBER_HISTOGRAM_NAMES + EMBER_ENTROPY_NAMES + EMBER_PE_NAMES
 
 URL_RE = re.compile(rb"https?://[^\s\x00\"'<>]{4,}", re.I)
 IP_RE = re.compile(rb"(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)")
@@ -69,6 +86,7 @@ def base_features(path: Path, mime_type: str) -> tuple[dict[str, float], dict]:
     script = path.suffix.lower() in {".ps1", ".bat", ".cmd", ".vbs", ".js", ".hta", ".sh", ".py"}
     office = path.suffix.lower() in {".doc", ".docm", ".docx", ".xls", ".xlsm", ".xlsx", ".ppt", ".pptm", ".pptx"}
     pdf = path.suffix.lower() == ".pdf" or mime_type == "application/pdf"
+    
     values = {
         "size_log2": math.log2(size + 1),
         "entropy": entropy(sample),
@@ -90,14 +108,20 @@ def base_features(path: Path, mime_type: str) -> tuple[dict[str, float], dict]:
         "sandbox_signature_count": 0.0,
         "sandbox_score": 0.0,
     }
+    
+    ember_vals, ember_meta = extract_ember_features(path, mime_type)
+    values.update(ember_vals)
+
     metadata = {
         "sampled_bytes": len(sample),
         "urls": [item.decode("utf-8", "replace")[:500] for item in URL_RE.findall(sample)[:20]],
         "ip_addresses": [item.decode() for item in IP_RE.findall(sample)[:20]],
+        "ember": ember_meta,
     }
     return values, metadata
 
 
 def vectorize(features: dict[str, float]) -> list[float]:
     return [float(features.get(name, 0.0)) for name in FEATURE_NAMES]
+
 

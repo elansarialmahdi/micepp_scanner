@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.api import router
-from app.audit import append_event
+from app.audit import append_event, commit_with_audit_anchor
 from app.config import settings
 from app.database import Base, SessionLocal, engine
 from app.models import User, UserRole
@@ -40,7 +40,7 @@ def bootstrap() -> None:
                     target_id=admin.id,
                     payload={"username": admin.username},
                 )
-                db.commit()
+                commit_with_audit_anchor(db)
         finally:
             db.close()
 

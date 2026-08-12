@@ -66,6 +66,7 @@ class YaraAnalyzer(BaseAnalyzer):
                         "namespace": match.namespace,
                         "tags": list(match.tags),
                         "meta": dict(match.meta),
+                        "mitre_ttp": match.meta.get("mitre_ttp"),
                     }
                 )
 

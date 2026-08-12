@@ -10,7 +10,7 @@ from app.analyzers.extractor import extract_evidence
 from app.analyzers.ml import predict
 from app.analyzers.static import analyze_static
 from app.analyzers.types import AnalyzerFinding
-from app.audit import append_event
+from app.audit import append_event, commit_with_audit_anchor
 from app.config import settings
 from app.database import SessionLocal
 from app.models import (
@@ -66,7 +66,7 @@ def run_analysis(job_id: str) -> None:
             target_id=job.id,
             payload={"evidence_id": evidence.id, "pipeline_version": PIPELINE_VERSION},
         )
-        db.commit()
+        commit_with_audit_anchor(db)
 
         source = Path(evidence.storage_path)
         size, sha256, sha1, md5 = hash_file(source)
@@ -112,7 +112,7 @@ def run_analysis(job_id: str) -> None:
                 target_id=str(job.id),
                 payload={"error": job.error_message},
             )
-            db.commit()
+            commit_with_audit_anchor(db)
             return
         evidence.status = EvidenceStatus.VERIFIED
         evidence.verified_at = utcnow()
@@ -222,7 +222,7 @@ def run_analysis(job_id: str) -> None:
                     sandbox_unavailable.append(str(exc))
 
             if index % 25 == 0:
-                db.commit()
+                commit_with_audit_anchor(db)
 
         if sandbox_unavailable:
             _add_finding(
@@ -240,7 +240,17 @@ def run_analysis(job_id: str) -> None:
                 ),
             )
 
-        maximum_risk = max(static_scores + ml_scores + cape_scores, default=0.0)
+        risk_components = {
+            "static": round(max(static_scores, default=0.0), 2),
+            "machine_learning": round(max(ml_scores, default=0.0), 2) if ml_scores else None,
+            "sandbox": round(max(cape_scores, default=0.0), 2) if cape_scores else None,
+        }
+        available_components = [
+            (name, score) for name, score in risk_components.items() if score is not None
+        ]
+        dominant_risk_signal, maximum_risk = max(
+            available_components, key=lambda item: item[1], default=("static", 0.0)
+        )
         if maximum_risk >= 80:
             verdict = Verdict.MALICIOUS
         elif maximum_risk >= 45:
@@ -254,14 +264,17 @@ def run_analysis(job_id: str) -> None:
         job.verdict = verdict
         job.summary = {
             "artifacts_analyzed": len(extracted_files),
-            "static_max_score": round(max(static_scores, default=0.0), 2),
+            "static_max_score": risk_components["static"],
             "ml_model": active_model.version if active_model else None,
             "ml_max_probability": round(max(ml_scores, default=0.0) / 100, 4) if ml_scores else None,
             "sandbox_configured": bool(settings.cape_base_url),
             "sandbox_requested": sandbox_requested,
             "sandbox_completed": sandbox_completed,
-            "sandbox_max_score": round(max(cape_scores, default=0.0), 2) if cape_scores else None,
+            "sandbox_max_score": risk_components["sandbox"],
             "analysis_complete": not sandbox_unavailable,
+            "risk_components": risk_components,
+            "dominant_risk_signal": dominant_risk_signal,
+            "risk_method": "maximum_available_signal",
         }
         job.status = JobStatus.AWAITING_REVIEW
         job.finished_at = utcnow()
@@ -274,7 +287,7 @@ def run_analysis(job_id: str) -> None:
             target_id=job.id,
             payload={"verdict": verdict.value, "risk_score": job.risk_score, **job.summary},
         )
-        db.commit()
+        commit_with_audit_anchor(db)
     except Exception as exc:
         db.rollback()
         job = db.get(AnalysisJob, job_id)
@@ -292,7 +305,7 @@ def run_analysis(job_id: str) -> None:
                 target_id=job.id,
                 payload={"error": job.error_message, "trace": traceback.format_exc()[-4000:]},
             )
-            db.commit()
+            commit_with_audit_anchor(db)
         raise
     finally:
         db.close()

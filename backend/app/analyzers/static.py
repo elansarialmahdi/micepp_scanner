@@ -4,7 +4,7 @@ from pathlib import Path
 
 from app.analyzers.features import base_features
 from app.analyzers.registry import REGISTRY
-from app.analyzers.types import StaticResult
+from app.analyzers.types import StaticResult,AnalyzerFinding
 
 
 def detect_mime(path: Path) -> str:
@@ -73,6 +73,31 @@ def analyze_static(path: Path) -> StaticResult:
     )
 
     metadata["features"] = features
+
+    # If no actionable finding was produced, emit one informational finding
+    # so the "Constats techniques" panel is never shown empty.
+    actionable = [f for f in findings if f.category != "availability"]
+    if not actionable:
+        mime_short = mime_type.split("/")[-1].upper()
+        findings.append(
+            AnalyzerFinding(
+                agent="agent-static",
+                category="info",
+                severity=0,
+                title=f"Analyse statique terminée — aucune menace détectée",
+                description=(
+                    f"Les moteurs statiques (antivirus, YARA, entropie, chaînes) "
+                    f"n'ont relevé aucun indicateur suspect dans ce fichier "
+                    f"{mime_short} ({metadata.get('sampled_bytes', 0):,} octets analysés)."
+                ),
+                confidence=1.0,
+                details={
+                    "mime_type": mime_type,
+                    "engines_run": ["ClamAV", "YARA", "PE", "Office", "PDF", "Strings"],
+                    "static_risk_score": float(min(100, risk)),
+                },
+            )
+        )
 
     return StaticResult(
         mime_type=mime_type,

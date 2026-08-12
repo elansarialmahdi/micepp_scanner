@@ -189,7 +189,7 @@ function Layout({ user }: { user: User }) {
         <main className="content"><Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/cases" element={<CasesPage />} />
-          <Route path="/cases/:caseId" element={<CaseDetail />} />
+          <Route path="/cases/:caseId" element={<CaseDetail user={user} />} />
           <Route path="/jobs" element={<JobsPage />} />
           <Route path="/jobs/:jobId" element={<JobDetail user={user} />} />
           <Route path="/models" element={<ModelsPage user={user} />} />
@@ -206,7 +206,7 @@ function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; 
 }
 
 function Dashboard() {
-  const stats = useQuery({ queryKey: ["dashboard"], queryFn: () => request<DashboardStats>("/dashboard") });
+  const stats = useQuery({ queryKey: ["dashboard"], queryFn: () => request<DashboardStats>("/dashboard"), refetchInterval: 10_000 });
   const jobs = useQuery({ queryKey: ["jobs", "recent"], queryFn: () => request<Job[]>("/jobs?limit=6"), refetchInterval: 10_000 });
   if (stats.isLoading) return <Spinner />;
   if (stats.error || !stats.data) return <div className="error-box">{getError(stats.error)}</div>;
@@ -251,7 +251,7 @@ function CasesPage() {
   </>;
 }
 
-function CaseDetail() {
+function CaseDetail({ user }: { user: User }) {
   const { caseId = "" } = useParams();
   const client = useQueryClient();
   const navigate = useNavigate();
@@ -269,6 +269,8 @@ function CaseDetail() {
     onSuccess: () => { client.invalidateQueries({ queryKey: ["evidence", caseId] }); setShowUpload(false); setUpload({ file: null, label: "", kind: "file", notes: "", source: "" }); },
   });
   const analyze = useMutation({ mutationFn: (id: string) => request<Job>(`/evidence/${id}/analyze`, { method: "POST" }), onSuccess: (job) => navigate(`/jobs/${job.id}`) });
+  const verify = useMutation({ mutationFn: (id: string) => request<Evidence>(`/evidence/${id}/verify`, { method: "POST" }), onSuccess: () => client.invalidateQueries({ queryKey: ["evidence", caseId] }) });
+  const seal = useMutation({ mutationFn: () => request<CaseRecord>(`/cases/${caseId}/seal`, { method: "POST" }), onSuccess: () => { client.invalidateQueries({ queryKey: ["case", caseId] }); client.invalidateQueries({ queryKey: ["cases"] }); } });
   if (caseQuery.isLoading) return <Spinner />;
   if (!caseQuery.data) return <div className="error-box">Dossier introuvable</div>;
   const record = caseQuery.data;
@@ -276,8 +278,10 @@ function CaseDetail() {
     <div className="breadcrumbs"><Link to="/cases">Dossiers</Link><ChevronRight /><span>{record.reference}</span></div>
     <PageHeader eyebrow={`${record.classification} · ${record.reference}`} title={record.title} description={record.description || "Dossier sans description."} action={record.status === "open" ? <button className="button primary" onClick={() => setShowUpload(true)}><Upload size={17} /> Ajouter une preuve</button> : <Pill value={record.status} />} />
     <div className="integrity-banner"><Fingerprint /><div><strong>Préservation active</strong><span>Chaque pièce est hachée pendant l’ingestion, stockée en lecture seule et vérifiée avant analyse.</span></div></div>
+    {(user.role === "admin" || user.role === "reviewer") && record.status === "open" && <section className="panel seal-case"><div><span className="eyebrow">Clôture forensique</span><h2>Sceller ce dossier</h2><p>Le scellement bloque l’ajout de nouvelles preuves. Cette action est journalisée.</p></div><button className="button" onClick={() => { if (window.confirm("Sceller ce dossier et empêcher toute nouvelle ingestion ?")) seal.mutate(); }} disabled={seal.isPending}><LockKeyhole size={16} /> {seal.isPending ? "Scellement…" : "Sceller le dossier"}</button>{seal.error && <div className="error-box"><AlertTriangle />{getError(seal.error)}</div>}</section>}
     {showUpload && <div className="modal-backdrop"><form className="modal wide-modal" onSubmit={(e) => { e.preventDefault(); uploadMutation.mutate(); }}><div className="modal-head"><div><span className="eyebrow">Ingestion forensique</span><h2>Ajouter une pièce à conviction</h2></div><button type="button" className="icon-button" onClick={() => setShowUpload(false)}><X /></button></div><div className="form-grid"><label className="full file-drop"><Upload /><strong>{upload.file?.name ?? "Sélectionner la preuve ou l’image forensique"}</strong><span>Le transfert est haché en flux, sans charger le fichier en mémoire.</span><input type="file" onChange={(e) => setUpload({ ...upload, file: e.target.files?.[0] ?? null, label: upload.label || e.target.files?.[0]?.name || "" })} required /></label><label>Libellé de la preuve<input value={upload.label} onChange={(e) => setUpload({ ...upload, label: e.target.value })} required /></label><label>Type<select value={upload.kind} onChange={(e) => setUpload({ ...upload, kind: e.target.value })}><option value="file">Fichier individuel</option><option value="archive">Archive</option><option value="raw_image">Image brute (DD/IMG/RAW)</option><option value="ewf_image">Image EWF (E01)</option></select></label><label className="full">Identifiant du support / scellé<input value={upload.source} onChange={(e) => setUpload({ ...upload, source: e.target.value })} placeholder="N° scellé, série du support…" /></label><label className="full">Notes d’acquisition<textarea value={upload.notes} onChange={(e) => setUpload({ ...upload, notes: e.target.value })} rows={3} /></label></div>{uploadMutation.error && <div className="error-box"><AlertTriangle />{getError(uploadMutation.error)}</div>}<div className="modal-actions"><button type="button" className="button ghost" onClick={() => setShowUpload(false)}>Annuler</button><button className="button primary" disabled={uploadMutation.isPending}>{uploadMutation.isPending ? "Ingestion et hachage…" : "Préserver la preuve"}</button></div></form></div>}
     <section className="panel"><div className="panel-title"><div><span className="eyebrow">Inventaire</span><h2>Pièces à conviction</h2></div><span className="count">{evidence.data?.length ?? 0}</span></div>{evidence.isLoading ? <Spinner /> : !evidence.data?.length ? <EmptyState icon={<FileDigit />} title="Aucune preuve enregistrée">Ajoutez une image forensique, une archive ou un fichier isolé.</EmptyState> : <div className="evidence-table"><div className="table-head"><span>Pièce</span><span>Type / taille</span><span>Intégrité</span><span>État</span><span /></div>{evidence.data.map((item) => <div className="table-row" key={item.id}><div><strong>{item.label}</strong><small>{item.original_filename}</small></div><div><span>{item.kind.replace("_", " ")}</span><small>{formatBytes(item.size_bytes)}</small></div><code title={item.sha256}>{item.sha256.slice(0, 14)}…</code><Pill value={item.status} /><button className="button small" onClick={() => analyze.mutate(item.id)} disabled={analyze.isPending || item.status === "compromised" || item.status === "analyzing"}><ScanSearch size={15} /> Analyser</button></div>)}</div>}</section>
+    {evidence.data?.length ? <section className="panel integrity-checks"><div className="panel-title"><div><span className="eyebrow">Contrôle manuel</span><h2>Vérification d’intégrité</h2></div></div><p>Recalculez les empreintes de l’original conservé avant toute exploitation ou remise de rapport.</p><div className="integrity-check-list">{evidence.data.map((item) => <div key={item.id}><span>{item.label}</span><code>{item.sha256.slice(0, 14)}…</code><button className="button small ghost" onClick={() => verify.mutate(item.id)} disabled={verify.isPending || item.status === "analyzing"}><Fingerprint size={15} /> Vérifier</button></div>)}</div>{verify.error && <div className="error-box"><AlertTriangle />{getError(verify.error)}</div>}</section> : null}
     {analyze.error && <div className="error-box"><AlertTriangle />{getError(analyze.error)}</div>}
   </>;
 }
@@ -317,6 +321,8 @@ function JobDetail({ user }: { user: User }) {
   const data = job.data;
   const findings = [...(data.findings ?? [])].sort((a, b) => b.severity - a.severity);
   const complete = data.summary.analysis_complete !== false;
+  const riskComponents = data.summary.risk_components as Record<string, number | null> | undefined;
+  const dominantRiskSignal = String(data.summary.dominant_risk_signal ?? "—");
   return <>
     <div className="breadcrumbs"><Link to="/jobs">Analyses</Link><ChevronRight /><span>{data.id.slice(0, 8).toUpperCase()}</span></div>
     <PageHeader eyebrow={`Pipeline ${data.pipeline_version}`} title={`Analyse ${data.id.slice(0, 8).toUpperCase()}`} description={`Demandée le ${formatDate(data.requested_at)}`} action={<div className="header-actions"><Pill value={data.status} />{!["queued", "running", "failed"].includes(data.status) && <button className="button" onClick={() => downloadReport(data.id)}><Download size={16} /> Rapport PDF</button>}</div>} />
@@ -324,6 +330,7 @@ function JobDetail({ user }: { user: User }) {
     {data.status === "failed" && <div className="error-box"><XCircle />{data.error_message}</div>}
     {!complete && <div className="warning-banner"><AlertTriangle /><div><strong>Couverture dynamique incomplète</strong><span>La sandbox n’a produit aucun résultat de substitution. Le verdict tient compte de cette limite et doit être examiné par un expert.</span></div></div>}
     <section className="analysis-hero"><RiskGauge score={data.risk_score} verdict={data.verdict} /><div className="verdict-block"><span className="eyebrow">Verdict automatisé</span><h2>{data.verdict ? verdictLabels[data.verdict] : "En cours"}</h2><p>Ce résultat assiste l’expert ; il ne constitue jamais une décision judiciaire autonome.</p></div><div className="summary-metrics"><div><span>Artefacts</span><strong>{String(data.summary.artifacts_analyzed ?? "—")}</strong></div><div><span>Sandbox</span><strong>{String(data.summary.sandbox_completed ?? 0)} / {String(data.summary.sandbox_requested ?? 0)}</strong></div><div><span>Modèle IA</span><strong>{data.summary.ml_model ? "Actif" : "Non entraîné"}</strong></div></div></section>
+    {riskComponents && <section className="panel score-breakdown"><div className="panel-title"><div><span className="eyebrow">Score explicable</span><h2>Contributions au risque</h2></div><span className="count">Signal dominant : {dominantRiskSignal}</span></div><div className="score-components"><div><span>Analyse statique</span><strong>{riskComponents.static ?? 0}/100</strong></div><div><span>Modèle IA</span><strong>{riskComponents.machine_learning == null ? "Non disponible" : `${riskComponents.machine_learning}/100`}</strong></div><div><span>Sandbox</span><strong>{riskComponents.sandbox == null ? "Non disponible" : `${riskComponents.sandbox}/100`}</strong></div></div><p className="score-note">Le verdict est déterminé par le signal disponible le plus élevé ; les erreurs de disponibilité ne majorent pas le risque.</p></section>}
     <section className="grid-analysis">
       <div className="panel"><div className="panel-title"><div><span className="eyebrow">Observations corrélées</span><h2>Constats techniques</h2></div><span className="count">{findings.length}</span></div>{!findings.length ? <EmptyState icon={<ShieldCheck />} title="Aucun constat">Aucun indicateur notable n’a été enregistré.</EmptyState> : <div className="findings">{findings.map((finding) => <FindingCard finding={finding} key={finding.id} />)}</div>}</div>
       <aside className="review-column">
